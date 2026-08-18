@@ -25,7 +25,9 @@ Usage
 import argparse
 import asyncio
 import json
+import os
 import queue as _q_mod
+import select as _select
 import struct
 import subprocess
 import sys
@@ -561,14 +563,29 @@ class DMRDecoder:
         print(f"[DMR] Decoding {freq} MHz  {label}")
 
         try:
+            fd      = self._dsd.stdout.fileno()
+            buf     = bytearray()
+            timeout = CHUNK_MS / 1000  # seconds
+
             while self._running:
-                data = self._dsd.stdout.read(CHUNK_SIZE)
-                if not data:
-                    break
-                self._detect.feed(data)
-                self._bcast.broadcast(data)
-                if self._feeder:
-                    self._feeder.send(data)
+                ready, _, _ = _select.select([fd], [], [], timeout)
+                if ready:
+                    got = os.read(fd, CHUNK_SIZE)
+                    if not got:
+                        break
+                    buf.extend(got)
+                else:
+                    # dsd has no output between transmissions — tick the detector
+                    buf.extend(SILENCE)
+
+                while len(buf) >= CHUNK_SIZE:
+                    chunk = bytes(buf[:CHUNK_SIZE])
+                    del buf[:CHUNK_SIZE]
+                    self._detect.feed(chunk)
+                    self._bcast.broadcast(chunk)
+                    if self._feeder:
+                        self._feeder.send(chunk)
+
         finally:
             self._kill()
             print("[DMR] Pipeline stopped.")
