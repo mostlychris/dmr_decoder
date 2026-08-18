@@ -19,6 +19,8 @@
   "activity_threshold": 300,
   "squelch_hold":       0.5,
   "min_call_length":    1.0,
+  "audio_lp_hz":        3500,
+  "audio_gain":         0.80,
 
   "dispatcher": {
     "url":             "http://127.0.0.1:9090",

@@ -241,6 +241,45 @@ class CallDetector:
             ).start()
 
 
+# ── Audio post-processor ──────────────────────────────────────────────────────
+
+class AudioProcessor:
+    """Low-pass filter + gain trim for AMBE-decoded PCM.
+
+    AMBE vocoder artefacts concentrate above the speech band (~3.5 kHz).
+    A gentle LP removes the harshness; a gain trim gives headroom so peaks
+    don't rail at 0 dBFS.
+    """
+
+    def __init__(self, rate: int = AUDIO_RATE, lp_hz: float = 3500.0,
+                 gain: float = 0.80):
+        self._gain       = float(gain)
+        self._use_filter = False
+        try:
+            import numpy as np
+            from scipy.signal import butter, lfilter_zi
+            nyq          = rate / 2.0
+            cutoff       = min(float(lp_hz), nyq - 1.0)
+            b, a         = butter(2, cutoff / nyq, btype="low")
+            self._b      = b
+            self._a      = a
+            self._zi     = lfilter_zi(b, a) * 0.0
+            self._np     = np
+            self._use_filter = True
+        except ImportError:
+            pass
+
+    def process(self, data: bytes) -> bytes:
+        if not self._use_filter:
+            return data
+        from scipy.signal import lfilter
+        np      = self._np
+        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        filt, self._zi = lfilter(self._b, self._a, samples, zi=self._zi)
+        out     = np.clip(filt * self._gain, -1.0, 1.0)
+        return (out * 32767.0).astype(np.int16).tobytes()
+
+
 # ── Audio broadcaster (decoder thread → async consumers) ──────────────────────
 
 class AudioBroadcaster:
@@ -461,6 +500,10 @@ class DMRDecoder:
         self._detect  = detector
         self._feeder  = feeder
         self._debug   = debug
+        self._proc    = AudioProcessor(
+            lp_hz=cfg.get("audio_lp_hz", 3500.0),
+            gain=cfg.get("audio_gain",   0.80),
+        )
         self._rtlfm: Optional[subprocess.Popen] = None
         self._dsd:   Optional[subprocess.Popen] = None
         self._running = False
@@ -579,7 +622,7 @@ class DMRDecoder:
                     buf.extend(SILENCE)
 
                 while len(buf) >= CHUNK_SIZE:
-                    chunk = bytes(buf[:CHUNK_SIZE])
+                    chunk = self._proc.process(bytes(buf[:CHUNK_SIZE]))
                     del buf[:CHUNK_SIZE]
                     self._detect.feed(chunk)
                     self._bcast.broadcast(chunk)
