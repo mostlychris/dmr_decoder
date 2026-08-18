@@ -27,6 +27,7 @@ import asyncio
 import json
 import os
 import queue as _q_mod
+import re
 import select as _select
 import struct
 import subprocess
@@ -35,6 +36,9 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional
+
+_TG_RE  = re.compile(r'\bTG=(\d+)')
+_SRC_RE = re.compile(r'\bSRC=(\d+)')
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
@@ -113,24 +117,26 @@ class CallUploader:
         except Exception as e:
             print(f"[Upload] Warning — cannot reach dispatcher: {e}", file=sys.stderr)
 
-    def upload(self, pcm: bytes, start_time: float, duration: float):
+    def upload(self, pcm: bytes, start_time: float, duration: float,
+               talkgroup: Optional[int] = None, source: Optional[int] = None):
         """Encode PCM → WAV and POST to dispatcher.  Runs in a background thread."""
         import urllib.request
         import urllib.parse
 
+        tg    = str(talkgroup) if talkgroup is not None else self._tg
         wav   = _wav_file(pcm)
-        fname = f"{self._system}_{self._tg}_{int(start_time)}.wav"
+        fname = f"{self._system}_{tg}_{int(start_time)}.wav"
 
         fields = {
             "key":            self._api_key,
             "systemLabel":    self._system,
-            "talkgroup":      self._tg,
+            "talkgroup":      tg,
             "dateTime":       str(int(start_time)),
             "frequency":      self._freq_hz,
             "talkgroupTag":   self._tg_tag,
             "talkgroupName":  self._tg_name,
             "talkgroupGroup": self._tg_group,
-            "sources":        "[]",
+            "sources":        f'[{{"src":{source}}}]' if source else "[]",
         }
 
         boundary = b"----DmrDecoderBoundary"
@@ -161,7 +167,8 @@ class CallUploader:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 status = resp.getcode()
-            print(f"[Upload] {fname}  ({duration:.1f}s)  → HTTP {status}")
+            src_str = f"  SRC={source}" if source else ""
+            print(f"[Upload] {fname}  ({duration:.1f}s){src_str}  → HTTP {status}")
         except Exception as e:
             print(f"[Upload] Error posting {fname}: {e}", file=sys.stderr)
 
@@ -183,8 +190,9 @@ class CallDetector:
     _ACTIVE = 1
     _HOLD   = 2
 
-    def __init__(self, cfg: dict, uploader: Optional[CallUploader]):
+    def __init__(self, cfg: dict, uploader: Optional[CallUploader], get_tg=None):
         self._uploader     = uploader
+        self._get_tg       = get_tg   # callable → (tg, src) or (None, None)
         self._threshold    = cfg.get("activity_threshold", ACTIVITY_THRESHOLD)
         self._hold_secs    = float(cfg.get("squelch_hold", 0.5))
         self._min_length   = float(cfg.get("min_call_length", 1.0))
@@ -192,6 +200,8 @@ class CallDetector:
         self._buf          = bytearray()
         self._start        = 0.0
         self._hold_until   = 0.0
+        self._call_tg:     Optional[int] = None
+        self._call_src:    Optional[int] = None
 
         # Public state
         self.active    = False
@@ -209,6 +219,10 @@ class CallDetector:
                 self._buf   = bytearray(pcm)
                 self.active = True
                 self.rx_count += 1
+                if self._get_tg:
+                    self._call_tg, self._call_src = self._get_tg()
+                else:
+                    self._call_tg = self._call_src = None
 
         elif self._state == self._ACTIVE:
             self._buf.extend(pcm)
@@ -231,11 +245,10 @@ class CallDetector:
         if duration < self._min_length:
             return
         if self._uploader:
-            start = self._start
-            dur   = duration
             threading.Thread(
                 target=self._uploader.upload,
-                args=(pcm, start, dur),
+                args=(pcm, self._start, duration,
+                      self._call_tg, self._call_src),
                 daemon=True,
                 name="call-upload",
             ).start()
@@ -508,6 +521,12 @@ class DMRDecoder:
         self._dsd:   Optional[subprocess.Popen] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._current_tg:  Optional[int] = None
+        self._current_src: Optional[int] = None
+
+    def get_tg(self) -> tuple[Optional[int], Optional[int]]:
+        """Return the most recently decoded (talkgroup, source) pair."""
+        return self._current_tg, self._current_src
 
     def start(self):
         self._running = True
@@ -551,8 +570,6 @@ class DMRDecoder:
             "-i", "-",
             "-o", "-",
         ]
-        if not self._debug:
-            cmd.append("-q")
         cmd += c.get("decoder_args", [])
         return cmd
 
@@ -570,6 +587,22 @@ class DMRDecoder:
                     except Exception:
                         pass
         self._dsd = self._rtlfm = None
+
+    def _read_stderr(self, proc: subprocess.Popen):
+        """Parse dsd-fme stderr for TG/SRC; print to terminal only in debug."""
+        try:
+            for raw in proc.stderr:
+                line = raw.decode(errors="replace").rstrip()
+                if self._debug:
+                    print(line, file=sys.stderr)
+                m = _TG_RE.search(line)
+                if m:
+                    self._current_tg = int(m.group(1))
+                m = _SRC_RE.search(line)
+                if m:
+                    self._current_src = int(m.group(1))
+        except Exception:
+            pass
 
     def _loop(self):
         while self._running:
@@ -591,17 +624,23 @@ class DMRDecoder:
             print(f"[DMR] rtl_fm: {' '.join(rtlfm_cmd)}")
             print(f"[DMR] dsd:    {' '.join(dsd_cmd)}")
 
-        stderr_dst = None if self._debug else subprocess.DEVNULL
         self._rtlfm = subprocess.Popen(
-            rtlfm_cmd, stdout=subprocess.PIPE, stderr=stderr_dst
+            rtlfm_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
         self._dsd = subprocess.Popen(
             dsd_cmd,
             stdin=self._rtlfm.stdout,
             stdout=subprocess.PIPE,
-            stderr=stderr_dst,
+            stderr=subprocess.PIPE,  # always capture — parse TG/SRC
         )
         self._rtlfm.stdout.close()   # propagate SIGPIPE when dsd dies
+
+        threading.Thread(
+            target=self._read_stderr,
+            args=(self._dsd,),
+            daemon=True,
+            name="dsd-stderr",
+        ).start()
 
         print(f"[DMR] Decoding {freq} MHz  {label}")
 
@@ -654,13 +693,16 @@ def health():
 @app.get("/status")
 def status():
     ice = _cfg.get("broadcastify", {})
+    tg, src = _dec.get_tg() if _dec else (None, None)
     return {
-        "name":       _cfg.get("name", "DMR Decoder"),
-        "frequency":  _cfg.get("frequency"),
-        "label":      _cfg.get("label"),
-        "active":     bool(_detect and _detect.active),
-        "rx_count":   _detect.rx_count if _detect else 0,
-        "audio_rate": AUDIO_RATE,
+        "name":        _cfg.get("name", "DMR Decoder"),
+        "frequency":   _cfg.get("frequency"),
+        "label":       _cfg.get("label"),
+        "active":      bool(_detect and _detect.active),
+        "rx_count":    _detect.rx_count if _detect else 0,
+        "talkgroup":   tg,
+        "source":      src,
+        "audio_rate":  AUDIO_RATE,
         "icecast": {
             "enabled":   ice.get("enabled", False),
             "connected": _feeder.connected if _feeder else False,
@@ -746,7 +788,7 @@ def main():
         uploader = CallUploader(disp_cfg, freq_mhz)
         uploader.probe()
 
-    # Build call detector
+    # Build call detector (get_tg wired below after decoder is created)
     _detect = CallDetector(_cfg, uploader)
 
     # Start optional Icecast feeder
@@ -758,6 +800,7 @@ def main():
 
     # Start DMR decoder pipeline
     _dec = DMRDecoder(_cfg, _bcast, _detect, _feeder, debug=args.debug)
+    _detect._get_tg = _dec.get_tg   # wire live TG into call detector
     _dec.start()
 
     host = _cfg.get("host", "0.0.0.0")
