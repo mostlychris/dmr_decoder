@@ -39,7 +39,7 @@ from fastapi.responses import Response, StreamingResponse
 import uvicorn
 
 # ── Audio constants ────────────────────────────────────────────────────────────
-AUDIO_RATE = 8_000                                # dsd native output sample rate
+AUDIO_RATE = 16_000                               # dsd-fme actual output sample rate
 CHUNK_MS   = 120                                  # PCM distribution granularity
 CHUNK_SIZE = AUDIO_RATE * 2 * CHUNK_MS // 1000   # bytes — 16-bit mono
 SILENCE    = bytes(CHUNK_SIZE)
