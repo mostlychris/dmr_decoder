@@ -506,7 +506,6 @@ class DMRDecoder:
             "-f", fmt,
             "-i", "-",
             "-o", "-",
-            "-r", str(AUDIO_RATE),
         ]
         if not self._debug:
             cmd.append("-q")
