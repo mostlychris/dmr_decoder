@@ -484,8 +484,7 @@ class DMRDecoder:
         cmd  = [
             "rtl_fm",
             "-f", str(freq),
-            "-s", "240000",               # capture BW, decimated to 48 kHz
-            "-r", "48000",                # output 48 kHz to dsd
+            "-s", str(c.get("rtlfm_rate", 48000)),
             "-g", str(c.get("gain", "40")),
             "-p", str(c.get("ppm", 0)),
             "-M", c.get("rtlfm_mode", "fm"),

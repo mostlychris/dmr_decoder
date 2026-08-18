@@ -9,9 +9,10 @@
   "ppm":       0,
   "device":    1,
 
-  "decoder":        "dsd",
+  "decoder":        "dsd-fme",
   "decoder_format": "gf",
   "decoder_args":   [],
+  "rtlfm_rate":     48000,
   "rtlfm_mode":     "fm",
   "rtlfm_args":     [],
 
