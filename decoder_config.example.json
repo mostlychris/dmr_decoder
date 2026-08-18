@@ -1,0 +1,44 @@
+{
+  "name":  "DMR Decoder",
+  "host":  "0.0.0.0",
+  "port":  8081,
+
+  "frequency": "462.5375",
+  "label":     "Local DMR",
+  "gain":      "40",
+  "ppm":       0,
+  "device":    1,
+
+  "decoder":        "dsd",
+  "decoder_format": "gf",
+  "decoder_args":   [],
+  "rtlfm_mode":     "fm",
+  "rtlfm_args":     [],
+
+  "activity_threshold": 300,
+  "squelch_hold":       0.5,
+  "min_call_length":    1.0,
+
+  "dispatcher": {
+    "url":             "http://127.0.0.1:9090",
+    "api_key":         "",
+    "system":          "Local DMR",
+    "talkgroup":       1,
+    "talkgroup_tag":   "DMR",
+    "talkgroup_name":  "Local DMR Channel",
+    "talkgroup_group": "DMR"
+  },
+
+  "broadcastify": {
+    "enabled":          false,
+    "server":           "audio2.broadcastify.com",
+    "port":             80,
+    "password":         "your_stream_password",
+    "mountpoint":       "/your_mountpoint",
+    "bitrate":          32,
+    "lp_cutoff":        3500,
+    "admin_user":       "admin",
+    "admin_password":   "",
+    "metadata_delay":   0.0
+  }
+}
