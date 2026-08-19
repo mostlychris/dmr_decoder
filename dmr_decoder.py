@@ -37,7 +37,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-_TG_RE  = re.compile(r'\bTG=(\d+)')
+_TG_RE  = re.compile(r'\bTGT=(\d+)')
 _SRC_RE = re.compile(r'\bSRC=(\d+)')
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -158,6 +158,7 @@ class CallUploader:
             b"--" + boundary + b"--\r\n"
         )
 
+        print(f"[Upload] → {self._url}  tg={tg}  src={source}  system={self._system}  file={fname}  dur={duration:.1f}s")
         req = urllib.request.Request(
             self._url,
             data=bytes(body),
@@ -167,8 +168,7 @@ class CallUploader:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 status = resp.getcode()
-            src_str = f"  SRC={source}" if source else ""
-            print(f"[Upload] {fname}  ({duration:.1f}s){src_str}  → HTTP {status}")
+            print(f"[Upload] ✓ HTTP {status}")
         except Exception as e:
             print(f"[Upload] Error posting {fname}: {e}", file=sys.stderr)
 
