@@ -37,8 +37,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-_TG_RE  = re.compile(r'\bTGT=(\d+)')
-_SRC_RE = re.compile(r'\bSRC=(\d+)')
+_TG_RE    = re.compile(r'\bTGT=(\d+)')
+_SRC_RE   = re.compile(r'\bSRC=(\d+)')
+_NOISE_RE = re.compile(r'Sync:|Activity Update|SLCO NULL|^\s*$')
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
@@ -593,14 +594,14 @@ class DMRDecoder:
         try:
             for raw in proc.stderr:
                 line = raw.decode(errors="replace").rstrip()
-                if self._debug:
-                    print(line, file=sys.stderr)
                 m = _TG_RE.search(line)
                 if m:
                     self._current_tg = int(m.group(1))
                 m = _SRC_RE.search(line)
                 if m:
                     self._current_src = int(m.group(1))
+                if self._debug and not _NOISE_RE.search(line):
+                    print(line, file=sys.stderr)
         except Exception:
             pass
 
