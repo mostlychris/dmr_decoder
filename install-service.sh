@@ -16,7 +16,8 @@ sudo tee "$UNIT" > /dev/null << EOF
 [Unit]
 Description=DMR Channel Decoder
 Documentation=https://github.com/mostlychris/dmr_decoder
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
