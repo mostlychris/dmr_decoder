@@ -258,17 +258,25 @@ class CallDetector:
 # ── Audio post-processor ──────────────────────────────────────────────────────
 
 class AudioProcessor:
-    """Low-pass filter + gain trim for AMBE-decoded PCM.
+    """Low-pass filter + gain trim + crossfade for AMBE-decoded PCM.
 
     AMBE vocoder artefacts concentrate above the speech band (~3.5 kHz).
     A gentle LP removes the harshness; a gain trim gives headroom so peaks
-    don't rail at 0 dBFS.
+    don't rail at 0 dBFS.  The crossfade envelope detects AMBE frame
+    erasures (runs of exact-zero samples) and applies a short fade-out/in
+    at each boundary so the gaps sound like smooth dips instead of hard
+    cuts.
     """
 
     def __init__(self, rate: int = AUDIO_RATE, lp_hz: float = 3500.0,
-                 gain: float = 0.80):
+                 gain: float = 0.80, crossfade_ms: float = 8.0):
         self._gain       = float(gain)
         self._use_filter = False
+        # Crossfade state (works even without scipy)
+        self._env        = 1.0                                  # current envelope 0–1
+        self._fade_len   = max(1, int(rate * crossfade_ms / 1000.0))
+        self._sil_thresh = 1.0 / 32768.0                       # ~1 LSB; AMBE erasures are exact zeros
+        self._crossfade  = crossfade_ms > 0.0
         try:
             import numpy as np
             from scipy.signal import butter, lfilter_zi
@@ -291,6 +299,25 @@ class AudioProcessor:
         samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
         filt, self._zi = lfilter(self._b, self._a, samples, zi=self._zi)
         out     = np.clip(filt * self._gain, -1.0, 1.0)
+
+        if self._crossfade:
+            # Apply a per-sample fade envelope driven by the raw (pre-filter)
+            # samples so that AMBE zero-fill erasures are detected cleanly
+            # before the LP filter smears their edges.
+            env  = np.empty(len(out), dtype=np.float32)
+            e    = float(self._env)
+            step = 1.0 / self._fade_len
+            sil  = self._sil_thresh
+            for i in range(len(out)):
+                target = 0.0 if abs(float(samples[i])) < sil else 1.0
+                if target > e:
+                    e = min(1.0, e + step)
+                else:
+                    e = max(target, e - step)
+                env[i] = e
+            self._env = e
+            out = out * env
+
         return (out * 32767.0).astype(np.int16).tobytes()
 
 
@@ -515,8 +542,9 @@ class DMRDecoder:
         self._feeder  = feeder
         self._debug   = debug
         self._proc    = AudioProcessor(
-            lp_hz=cfg.get("audio_lp_hz", 3500.0),
-            gain=cfg.get("audio_gain",   0.80),
+            lp_hz=cfg.get("audio_lp_hz",       3500.0),
+            gain=cfg.get("audio_gain",           0.80),
+            crossfade_ms=cfg.get("audio_crossfade_ms", 8.0),
         )
         self._rtlfm: Optional[subprocess.Popen] = None
         self._dsd:   Optional[subprocess.Popen] = None

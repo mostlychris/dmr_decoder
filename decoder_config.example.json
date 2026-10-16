@@ -21,6 +21,7 @@
   "min_call_length":    1.0,
   "audio_lp_hz":        3500,
   "audio_gain":         0.80,
+  "audio_crossfade_ms": 8.0,
 
   "dispatcher": {
     "url":             "http://127.0.0.1:9090",
