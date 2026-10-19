@@ -39,7 +39,7 @@ from typing import Optional
 
 _TG_RE    = re.compile(r'\bTGT=(\d+)')
 _SRC_RE   = re.compile(r'\bSRC=(\d+)')
-_NOISE_RE = re.compile(r'Sync:|Activity Update|SLCO NULL|^\s*$')
+_NOISE_RE = re.compile(r'Sync:|Activity Update|SLCO NULL|P25[Pp]2|^\s*$')
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
