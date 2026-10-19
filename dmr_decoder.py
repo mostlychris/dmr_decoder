@@ -614,7 +614,12 @@ class DMRDecoder:
         c      = self._cfg
         binary = c.get("decoder", "dsd")
         fmt    = c.get("decoder_format", "gf")   # "g" = force DMR, "gf" = auto/DMR-preferred, "a" = auto
-        cmd    = [
+        cmd    = []
+        # stdbuf -o0 forces immediate stdout writes, preventing the libc 8KB
+        # buffer from causing 120ms+ gaps between PCM flushes (appears as stalls).
+        if c.get("decoder_unbuffer", True):
+            cmd += ["stdbuf", "-o0"]
+        cmd += [
             binary,
             "-f", fmt,
             "-i", "-",
@@ -700,15 +705,19 @@ class DMRDecoder:
             buf     = bytearray()
             timeout = CHUNK_MS / 1000  # seconds
 
-            # Debug stats accumulators (reset each second)
-            _dbg_real    = 0    # chunks from real dsd output
-            _dbg_timeout = 0    # chunks from select() timeout (pipeline stall)
-            _dbg_erasure = 0.0  # sum of erasure_pct
-            _dbg_proc_ms = 0.0  # sum of proc time
-            _dbg_chunks  = 0    # total chunks processed
-            _dbg_t       = _time.perf_counter()
+            # Debug stats — reset at call-start so startup idle counts don't
+            # pollute the first active-call window.
+            _dbg_real         = 0      # select() returns with data
+            _dbg_timeout      = 0      # select() timeouts (pipeline stalls)
+            _dbg_real_erasure = 0.0    # erasure % from real dsd chunks only
+            _dbg_real_chunks  = 0      # real chunks processed (for erasure avg)
+            _dbg_proc_ms      = 0.0    # sum of proc wall time
+            _dbg_total_chunks = 0      # all chunks (for proc avg)
+            _dbg_t            = _time.perf_counter()
+            _dbg_prev_active  = False  # detect rising edge of active call
 
             while self._running:
+                is_real = False
                 ready, _, _ = _select.select([fd], [], [], timeout)
                 if ready:
                     got = os.read(fd, CHUNK_SIZE)
@@ -716,39 +725,55 @@ class DMRDecoder:
                         break
                     buf.extend(got)
                     _dbg_real += 1
+                    is_real    = True
                 else:
                     # dsd has no output between transmissions — tick the detector
                     buf.extend(SILENCE)
                     if self._debug and self._detect.active:
-                        print(f"[DMR] ⚠ dsd timeout during active call",
+                        print("[DMR] ⚠ dsd timeout during active call",
                               file=sys.stderr)
                     _dbg_timeout += 1
 
                 while len(buf) >= CHUNK_SIZE:
                     chunk = self._proc.process(bytes(buf[:CHUNK_SIZE]))
                     del buf[:CHUNK_SIZE]
-                    _dbg_chunks  += 1
-                    _dbg_erasure += self._proc.last_erasure_pct
-                    _dbg_proc_ms += self._proc.last_proc_ms
+                    _dbg_total_chunks += 1
+                    _dbg_proc_ms      += self._proc.last_proc_ms
+                    if is_real:
+                        _dbg_real_chunks  += 1
+                        _dbg_real_erasure += self._proc.last_erasure_pct
                     self._detect.feed(chunk)
                     self._bcast.broadcast(chunk)
                     if self._feeder:
                         self._feeder.send(chunk)
 
-                if self._debug and self._detect.active:
-                    now = _time.perf_counter()
-                    if now - _dbg_t >= 1.0:
-                        n = _dbg_chunks or 1
-                        print(
-                            f"[DMR] active | "
-                            f"chunks {_dbg_real}real/{_dbg_timeout}stall | "
-                            f"erasure {_dbg_erasure/n:.1f}% avg | "
-                            f"proc {_dbg_proc_ms/n:.2f}ms avg",
-                            file=sys.stderr,
-                        )
-                        _dbg_real = _dbg_timeout = _dbg_chunks = 0
-                        _dbg_erasure = _dbg_proc_ms = 0.0
-                        _dbg_t = now
+                # Reset counters on rising edge of active call so pre-call
+                # idle counts don't inflate the first printed window.
+                if self._debug:
+                    active = self._detect.active
+                    if active and not _dbg_prev_active:
+                        _dbg_real = _dbg_timeout = 0
+                        _dbg_real_erasure = _dbg_real_chunks = 0
+                        _dbg_proc_ms = _dbg_total_chunks = 0
+                        _dbg_t = _time.perf_counter()
+                    _dbg_prev_active = active
+
+                    if active:
+                        now = _time.perf_counter()
+                        if now - _dbg_t >= 1.0:
+                            rc  = _dbg_real_chunks  or 1
+                            tc  = _dbg_total_chunks or 1
+                            print(
+                                f"[DMR] active | "
+                                f"sel {_dbg_real}real/{_dbg_timeout}stall | "
+                                f"erasure {_dbg_real_erasure/rc:.1f}% (real chunks) | "
+                                f"proc {_dbg_proc_ms/tc:.2f}ms avg",
+                                file=sys.stderr,
+                            )
+                            _dbg_real = _dbg_timeout = 0
+                            _dbg_real_erasure = _dbg_real_chunks = 0
+                            _dbg_proc_ms = _dbg_total_chunks = 0
+                            _dbg_t = now
 
         finally:
             self._kill()
