@@ -232,13 +232,27 @@ class CallDetector:
                 self._hold_until = now + self._hold_secs
 
         elif self._state == self._HOLD:
-            self._buf.extend(pcm)
-            if signal:
-                self._state = self._ACTIVE  # burst resumed — same call
+            if signal and now < self._hold_until:
+                # Burst resumed within hold window — same call continues
+                self._buf.extend(pcm)
+                self._state = self._ACTIVE
             elif now >= self._hold_until:
+                # Hold expired — finalize call A, then handle any new signal
                 self._finalize()
                 self._state = self._IDLE
                 self.active = False
+                if signal:
+                    # New call started right as hold expired — begin fresh
+                    self._state    = self._ACTIVE
+                    self._start    = now
+                    self._buf      = bytearray(pcm)
+                    self.active    = True
+                    self.rx_count += 1
+                    if self._get_tg:
+                        self._call_tg, self._call_src = self._get_tg()
+            else:
+                # Within hold window, no signal — keep buffering tail silence
+                self._buf.extend(pcm)
 
     def _finalize(self):
         pcm      = bytes(self._buf)
