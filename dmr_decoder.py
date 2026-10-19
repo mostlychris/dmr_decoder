@@ -613,7 +613,7 @@ class DMRDecoder:
     def _dsd_cmd(self) -> list[str]:
         c      = self._cfg
         binary = c.get("decoder", "dsd")
-        fmt    = c.get("decoder_format", "gf")   # "gf" = guess, "d" = force DMR
+        fmt    = c.get("decoder_format", "gf")   # "g" = force DMR, "gf" = auto/DMR-preferred, "a" = auto
         cmd    = [
             binary,
             "-f", fmt,

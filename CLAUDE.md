@@ -30,7 +30,7 @@ Copy `decoder_config.example.json` → `decoder_config.json` and edit. Key field
 | `ppm` | Frequency correction (this dongle: **-5** at 464 MHz) |
 | `device` | RTL-SDR device index (0 = rtl-scanner, **1 = DMR decoder**) |
 | `decoder` | Decoder binary name, e.g. `"dsd-fme"` |
-| `decoder_format` | dsd-fme format flag value, e.g. `"gf"` (DMR) |
+| `decoder_format` | dsd-fme format flag value: `"g"` = force DMR, `"gf"` = auto/DMR-preferred (default), `"a"` = full auto, `"d"` = D-STAR |
 | `decoder_args` | Extra args passed to decoder, e.g. `[]` |
 | `rtlfm_rate` | rtl_fm sample rate, default `48000` |
 | `rtlfm_mode` | rtl_fm mode, default `"fm"` |
