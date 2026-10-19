@@ -291,33 +291,54 @@ class AudioProcessor:
         except ImportError:
             pass
 
+    # Stats populated by the last process() call; read by the debug loop.
+    last_erasure_pct: float = 0.0   # % of input samples that were AMBE zeros
+    last_fade_edges:  int   = 0     # silence↔signal transitions this chunk
+    last_proc_ms:     float = 0.0   # wall time for this call (ms)
+
     def process(self, data: bytes) -> bytes:
+        import time as _time
+        t0 = _time.perf_counter()
+
         if not self._use_filter:
+            self.last_erasure_pct = 0.0
+            self.last_fade_edges  = 0
+            self.last_proc_ms     = (_time.perf_counter() - t0) * 1000
             return data
+
         from scipy.signal import lfilter
         np      = self._np
         samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
         filt, self._zi = lfilter(self._b, self._a, samples, zi=self._zi)
         out     = np.clip(filt * self._gain, -1.0, 1.0)
 
+        sil = self._sil_thresh
+        zero_mask = np.abs(samples) < sil
+        self.last_erasure_pct = float(np.mean(zero_mask)) * 100.0
+
         if self._crossfade:
-            # Apply a per-sample fade envelope driven by the raw (pre-filter)
-            # samples so that AMBE zero-fill erasures are detected cleanly
-            # before the LP filter smears their edges.
-            env  = np.empty(len(out), dtype=np.float32)
-            e    = float(self._env)
-            step = 1.0 / self._fade_len
-            sil  = self._sil_thresh
+            env   = np.empty(len(out), dtype=np.float32)
+            e     = float(self._env)
+            step  = 1.0 / self._fade_len
+            edges = 0
+            prev_target = -1.0
             for i in range(len(out)):
-                target = 0.0 if abs(float(samples[i])) < sil else 1.0
+                target = 0.0 if zero_mask[i] else 1.0
+                if target != prev_target and prev_target >= 0.0:
+                    edges += 1
+                prev_target = target
                 if target > e:
                     e = min(1.0, e + step)
                 else:
                     e = max(target, e - step)
                 env[i] = e
-            self._env = e
+            self._env             = e
+            self.last_fade_edges  = edges
             out = out * env
+        else:
+            self.last_fade_edges = 0
 
+        self.last_proc_ms = (_time.perf_counter() - t0) * 1000
         return (out * 32767.0).astype(np.int16).tobytes()
 
 
@@ -674,9 +695,18 @@ class DMRDecoder:
         print(f"[DMR] Decoding {freq} MHz  {label}")
 
         try:
+            import time as _time
             fd      = self._dsd.stdout.fileno()
             buf     = bytearray()
             timeout = CHUNK_MS / 1000  # seconds
+
+            # Debug stats accumulators (reset each second)
+            _dbg_real    = 0    # chunks from real dsd output
+            _dbg_timeout = 0    # chunks from select() timeout (pipeline stall)
+            _dbg_erasure = 0.0  # sum of erasure_pct
+            _dbg_proc_ms = 0.0  # sum of proc time
+            _dbg_chunks  = 0    # total chunks processed
+            _dbg_t       = _time.perf_counter()
 
             while self._running:
                 ready, _, _ = _select.select([fd], [], [], timeout)
@@ -685,17 +715,40 @@ class DMRDecoder:
                     if not got:
                         break
                     buf.extend(got)
+                    _dbg_real += 1
                 else:
                     # dsd has no output between transmissions — tick the detector
                     buf.extend(SILENCE)
+                    if self._debug and self._detect.active:
+                        print(f"[DMR] ⚠ dsd timeout during active call",
+                              file=sys.stderr)
+                    _dbg_timeout += 1
 
                 while len(buf) >= CHUNK_SIZE:
                     chunk = self._proc.process(bytes(buf[:CHUNK_SIZE]))
                     del buf[:CHUNK_SIZE]
+                    _dbg_chunks  += 1
+                    _dbg_erasure += self._proc.last_erasure_pct
+                    _dbg_proc_ms += self._proc.last_proc_ms
                     self._detect.feed(chunk)
                     self._bcast.broadcast(chunk)
                     if self._feeder:
                         self._feeder.send(chunk)
+
+                if self._debug and self._detect.active:
+                    now = _time.perf_counter()
+                    if now - _dbg_t >= 1.0:
+                        n = _dbg_chunks or 1
+                        print(
+                            f"[DMR] active | "
+                            f"chunks {_dbg_real}real/{_dbg_timeout}stall | "
+                            f"erasure {_dbg_erasure/n:.1f}% avg | "
+                            f"proc {_dbg_proc_ms/n:.2f}ms avg",
+                            file=sys.stderr,
+                        )
+                        _dbg_real = _dbg_timeout = _dbg_chunks = 0
+                        _dbg_erasure = _dbg_proc_ms = 0.0
+                        _dbg_t = now
 
         finally:
             self._kill()
