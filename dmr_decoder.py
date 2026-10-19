@@ -703,7 +703,11 @@ class DMRDecoder:
             import time as _time
             fd      = self._dsd.stdout.fileno()
             buf     = bytearray()
-            timeout = CHUNK_MS / 1000  # seconds
+            # Use a longer timeout than CHUNK_MS so FEC-error processing in
+            # dsd-fme (which can stall stdout for 130–200ms) doesn't trigger
+            # false silence injections. End-of-call detection still works via
+            # squelch_hold.
+            timeout = self._cfg.get("select_timeout_ms", 250) / 1000
 
             # Debug stats — reset at call-start so startup idle counts don't
             # pollute the first active-call window.
